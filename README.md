@@ -48,7 +48,7 @@ ping bucket (per fping) = 500
 
 * tried multiple process as well. It's similar result as multi-thread
 
-* I tried few python native ICMP packages and none of them is reliable/faster comparing to "fping"
+* I tried few python native ICMP packages (https://github.com/stellarbit/aioping and https://pypi.org/project/icmplib/) and none of them is reliable/faster comparing to "fping"
 
 Basically I can do 200K targets in 60s per VM. PPS = 400,000 * 5 / 60 ~ 16K PPS . The network traffic is max at ~8Mbps with stable result. With 3 x VM , I can do ~600K targets. It's quite amazing but like to understand if more PPS can be pushed per VM
 
