@@ -1,0 +1,212 @@
+#!/usr/bin/python3
+import re
+from statistics import mean
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from time import time,sleep
+import argparse
+
+
+
+class mfPing():
+
+    def __init__(self,configYaml):
+        """
+        configYaml: Yaml configuration for this application
+
+        """
+   
+        self.config = self.processYaml(configYaml)
+        self.ipTrunks = list()
+      
+        
+    def processYaml(self,configYaml) -> dict:
+        '''
+        Load YAML into Dict
+        '''
+        import yaml
+        if configYaml:
+            with open(configYaml, 'r') as f:
+                result = yaml.safe_load(f)
+            return result
+        else:
+            print('No YAML configuration is specified')
+            exit(1)
+
+    def loadCsv(self):
+        """
+        Process inputCSV
+        """
+        poolSize = self.config['poolSize']
+        trunkSize = self.config['trunkSize']
+        csvFile = f"{self.config['inputCsv']}"
+        
+        with open(csvFile) as f:
+
+            ips = [ line.strip() for line in f  if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}',line.strip()) ]               
+
+        self.ipTrunks = self.listSlice(ips,poolSize,trunkSize)
+     
+
+    @staticmethod
+    def listSlice(ips,poolSize,trunkSize):
+        """
+        n(iteration) = len(ips) / (trunksize * poolSize)
+        1. Divide list evenly aross all child processes (poolSize)
+        2. Break list for each process by trunkSize for fping
+
+
+        Return : [ [(ip1,ip2,ip3),(ip4,...)],[],... ]
+        """
+        data = list()
+        poolTrunkSize = int(len(ips)/poolSize)
+        if poolTrunkSize >0 : # just list for 1 process if ips is less than poolSize
+            res = [ips[i:i + poolTrunkSize] for i in range(0, len(ips),poolTrunkSize )]
+        else:
+            res = [ips]
+        #Generate list of each fping 
+       
+        for r in res:
+            aTrunk = list()
+            for i in range(0, len(r), trunkSize):
+                l = r[i:i + trunkSize]
+                aTrunk.append(l)
+            data.append(aTrunk)
+
+        return data
+
+  
+    def pSummary(self,data:list):
+        """
+        Generate ping summary
+     
+        """
+        resultCount = len(data)
+        avgPacketLoss = mean ( [ r[1][0] for  r in data if r[1][0] is not None] )
+        avgAdjustPacketLoss = mean ( [ r[1][0] for  r in data if r[1][0] <100 ] )
+        avgRtt = mean ( [ r[1][1] for  r in data if r[1][1] is not None ] )
+        print(datetime.now(),'targets',resultCount,'packetLoss',avgPacketLoss,'adjusted Packetloss',avgAdjustPacketLoss ,'rtt',avgRtt)
+
+       
+
+    def resultCsv(self,data):
+        """
+        out: ip,packetloss,rtt
+
+        """
+        outputCsv = open(self.config['outputCsv'],'a')
+        
+        for r in data:
+            try:
+                rtt = r[0][2] if r[0][2] else ''
+                #bqString= f"{r[0][3]},{r[0][0]},{r[0][1]},{rtt}\n"
+                oString= f"{r[1][2]},{r[0]},{r[1][0]},{r[1][1]}\n"
+                outputCsv.write(oString)
+                
+            except Exception as e:
+                print(r,e)
+
+        outputCsv.close()
+     
+
+    def fPing(self,aTrunks):
+        """fping
+
+        Args:
+            ips (list of csv lines): 
+
+        Returns:
+            [list]: [(ip,(packetloss%,rtt)]
+            [('10.75.78.76', '0', '21.9',ts), ('10.75.40.143', '0', '19.8' ,ts)]
+        """
+        # print('Thread Start',len(aTrunks))
+        fpingCmd = self.config['fping']['cmd']
+        option_i = self.config['fping']['interval']
+        option_t = self.config['fping']['timeout']
+        option_c = self.config['fping']['count']
+        option_b = self.config['fping']['bytes']
+        option_r = self.config['fping']['retries']
+        reParser1 = r'(.*)\s+:\s+xmt/rcv/%loss = \d+/\d+/(\d+)%, min/avg/max = .*/(.*)/.*'
+        reParser2 = r'(.*)\s+:\s+xmt/rcv/%loss = \d+/\d+/(\d+)%'
+        result = list()
+        for fTrunk in aTrunks:
+            cmd = [ fpingCmd, "-i", str(option_i),"-4","-p",str(option_t),"-b",str(option_b), "-r", str(option_r) ,"-c", str(option_c) , "-q", "-B1.0"]
+            cmds = cmd + fTrunk
+            out = subprocess.Popen(cmds,stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT).stdout.read().decode()
+            out = [ s.strip() for s in out.split('\n') if s]
+            now = datetime.utcnow()
+            for x in out:
+                try:
+                    reParser = r'(.*)\s+:\s+xmt/rcv/%loss = \d/\d/(\d+)%, min/avg/max = .*/(.*)/.*'
+                    ip,packetloss,rtt = re.match(reParser,x).groups()
+                    packetloss = int(packetloss)
+                    rtt= int(float(rtt))
+                    result.append((ip.strip(), (packetloss,rtt,now)))
+                except Exception as e:
+                    try:
+                        reParser = r'(.*)\s+:\s+xmt/rcv/%loss = \d/\d/(\d+)%'
+                        ip,packetloss = re.match(reParser,x).groups()
+                        packetloss = int(packetloss)
+                        result.append((ip.strip(), (packetloss,None,now)))
+                    except:
+                        print(x,'processing error')
+       
+        return result
+
+    def mPing(self):
+        """
+        Multiple process Wrapper
+        Return: list of result
+      
+        """
+        poolSize = self.config['poolSize']
+        with ThreadPoolExecutor(poolSize) as p:
+
+            res = p.map(self.fPing, self.ipTrunks)
+            data = [ d  for presult in res for d in presult  ] 
+            self.pSummary(data)
+       
+
+        if self.config['outputCsv']:
+            self.resultCsv(data)
+        
+
+
+def main(configYaml):
+    """
+    """
+                    
+    startTime = datetime.now()
+    print(startTime,"start")
+    p = mfPing(configYaml)
+    p.loadCsv()
+    p.mPing()
+    difference = datetime.now() - startTime
+    duration  = difference.seconds
+    delay = p.config.get('delay',0)
+    print(datetime.now(),"completed in", duration,'seconds',"sleep",delay,"seconds")
+    sleep(delay)
+    return duration
+
+
+def mainloop(configYaml):
+
+    while True:
+        try:
+            main(configYaml)
+           
+            sleep(10)
+
+        except Exception as e:
+            print(e)
+       
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="Ping Monitor")
+    parser.add_argument("-c", "--config", type=str,help="Yaml Config Filename")
+    args = parser.parse_args()
+    configYaml=args.config
+    mainloop(configYaml)

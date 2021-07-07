@@ -1,0 +1,26 @@
+# Configuration for Ping Monitor
+
+#Version1.0
+# 500x72 , t:500,i:4 200K ~60s
+
+
+
+# Global Configuration
+inputCsv: "test.csv"
+
+trunkSize : 500 # control fping bulk targets
+poolSize: 72 # Control number of child processes
+delay: 0 # delay in seconds between each round
+
+
+   
+# Fping control
+fping:
+  cmd: /usr/bin/fping # 
+  count: 5 # -c option ping count. More count requires less trunkSize
+  timeout: 500 # -t option in microsecond. Increase value will slow down the process but more reliable result
+  retries: 1 # -r option 
+  bytes: 12 # -b option
+  interval: 4 # -i option  significant performance improvement
+
+outputCsv: "result.csv"
